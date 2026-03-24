@@ -2,7 +2,7 @@ import os
 import asyncio
 from playwright.async_api import async_playwright
 
-COUPON_PAGE_URL = "https://www.hannaford.com/coupons-weekly-flyer/coupons"
+COUPON_PAGE_URL = "https://hannaford.com/savings/coupons/browse"
 
 # JavaScript bookmarklet that clicks each available coupon clip button sequentially
 # with a 1.5s delay between clicks to avoid rate limiting
