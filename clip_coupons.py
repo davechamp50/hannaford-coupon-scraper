@@ -1,28 +1,20 @@
 import os
 import asyncio
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 COUPON_PAGE_URL = "https://hannaford.com/savings/coupons/browse"
 
 # JavaScript bookmarklet that clicks each available coupon clip button sequentially
 # with a 1.5s delay between clicks to avoid rate limiting
 CLIP_ALL_JS = """
-(function($) {
-    $.fn.pop = function() { var top = this.get(-1); this.splice(this.length-1,1); return top; };
-    $.fn.shift = function() { var bottom = this.get(0); this.splice(0,1); return bottom; };
-    clipper = function(coupons) {
-        if (coupons.length === 0) return;
-        coupons.pop().click();
-        setTimeout(function() { clipper(coupons); }, 1500);
-    };
-    clipper($('.couponTile.available .clipTarget'));
-})(jQuery);
+javascript:(function() {  var buttons = Array.from(document.querySelectorAll('button[data-opens-modal="false"]'))    .filter(function(btn) {      return btn.textContent.trim().includes('Clip Coupon');    });    console.log('Found ' + buttons.length + ' coupons to clip');    function clipNext(index) {    if (index >= buttons.length) {      console.log('Done! All coupons clipped.');      return;    }    buttons[index].click();    console.log('Clipping ' + (index + 1) + '/' + buttons.length);    setTimeout(function() { clipNext(index + 1); }, 1500);  }    clipNext(0);})();
 """
 
 
 async def login(page, username: str, password: str) -> None:
     await page.goto("https://www.hannaford.com/")
-    # Open sign-in modal/page
+    # Wait up to 60s for DataDome's JS verification to complete and reveal the real page
+    await page.get_by_role("link", name="Sign In").first.wait_for(timeout=60_000)
     await page.get_by_role("link", name="Sign In").first.click()
     await page.get_by_label("Email").fill(username)
     await page.get_by_label("Password").fill(password)
@@ -52,14 +44,16 @@ async def clip_coupons(page) -> None:
 async def main() -> None:
     username = os.environ["HANNAFORD_USERNAME"]
     password = os.environ["HANNAFORD_PASSWORD"]
+    # GitHub Actions runs headless; locally you can set HEADLESS=false to watch
+    headless = os.environ.get("HEADLESS", "true").lower() != "false"
 
     async with async_playwright() as p:
-        # GitHub Actions runs headless; locally you can set HEADLESS=false to watch
-        headless = os.environ.get("HEADLESS", "true").lower() != "false"
         browser = await p.chromium.launch(headless=headless)
-        context = await browser.new_context()
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+        )
         page = await context.new_page()
-
         try:
             print("Logging in to Hannaford...")
             await login(page, username, password)
