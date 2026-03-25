@@ -33,3 +33,10 @@ jobs:
           HANNAFORD_PASSWORD: ${{ secrets.HANNAFORD_PASSWORD }}
           HEADLESS: "true"
         run: uv run python clip_coupons.py
+
+      - name: Upload failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-screenshot
+          path: failure.png

@@ -59,6 +59,10 @@ async def main() -> None:
             await login(page, username, password)
             print("Login successful. Navigating to coupons...")
             await clip_coupons(page)
+        except Exception:
+            await page.screenshot(path="failure.png", full_page=False)
+            print("Screenshot saved to failure.png")
+            raise
         finally:
             await browser.close()
 
