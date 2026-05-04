@@ -1,43 +1,77 @@
-import os
 import asyncio
+import os
+
 from patchright.async_api import async_playwright
 
 COUPON_PAGE_URL = "https://hannaford.com/savings/coupons/browse"
+# Persistent Chromium user-data dir so cookies/localStorage survive between runs
+# and we can usually skip the fragile DataDome-gated login flow.
+USER_DATA_DIR = "./.chrome-profile"
+DEBUG_DIR = "./.debug-screenshots"
 
 # JavaScript bookmarklet that clicks each available coupon clip button sequentially
 # with a 1.5s delay between clicks to avoid rate limiting
 CLIP_ALL_JS = """
-javascript:(function() {  var buttons = Array.from(document.querySelectorAll('button[data-opens-modal="false"]'))    .filter(function(btn) {      return btn.textContent.trim().includes('Clip Coupon');    });    console.log('Found ' + buttons.length + ' coupons to clip');    function clipNext(index) {    if (index >= buttons.length) {      console.log('Done! All coupons clipped.');      return;    }    buttons[index].click();    console.log('Clipping ' + (index + 1) + '/' + buttons.length);    setTimeout(function() { clipNext(index + 1); }, 1500);  }    clipNext(0);})();
+javascript:(function() {  var buttons = Array.from(document.querySelectorAll('button[data-opens-modal="false"]'))    .filter(function(btn) {      return btn.textContent.trim().includes('Clip Coupon');    });    console.log('Found ' + buttons.length + ' coupons to clip');    function clipNext(index) {    if (index >= buttons.length) {      console.log('Done! All coupons clipped.');      return;    }    buttons[index].click();    console.log('Clipping ' + (index + 1) + '/' + buttons.length);    setTimeout(function() { clipNext(index + 1); }, 500);  }    clipNext(0);})();
 """
+
+
+async def is_logged_in(page) -> bool:
+    await page.goto("https://www.hannaford.com/")
+    # Header shows "Sign In" (dropdown trigger) when logged out, replaced by the
+    # user's name when logged in. Role-based match misses the trigger, so use text.
+    try:
+        await page.locator("text=Sign In").first.wait_for(
+            state="visible", timeout=15_000
+        )
+        return False
+    except Exception:
+        return True
 
 
 async def login(page, username: str, password: str) -> None:
     await page.goto("https://www.hannaford.com/")
-    # Wait up to 60s for DataDome's JS verification to complete and reveal the real page
-    await page.get_by_role("link", name="Sign In").first.wait_for(timeout=60_000)
-    await page.get_by_role("link", name="Sign In").first.click()
-    await page.get_by_label("Email").fill(username)
-    await page.get_by_label("Password").fill(password)
+    # Header has a "Sign In ⌄" dropdown trigger; clicking it reveals an inner
+    # button whose text is exactly "Sign In" — that's the one that opens the form.
+    sign_in_trigger = page.locator("text=Sign In").first
+    await sign_in_trigger.wait_for(state="visible", timeout=60_000)
+    await sign_in_trigger.click()
+    inner_signin = page.get_by_role("button", name="Sign In", exact=True).last
+    await inner_signin.wait_for(state="visible", timeout=10_000)
+    await inner_signin.click()
+    await page.locator('input[name="username"]').fill(username)
+    await page.locator('input[name="password"]').fill(password)
     await page.get_by_role("button", name="Sign In").click()
-    # Wait for navigation to confirm login succeeded
     await page.wait_for_load_state("networkidle")
 
 
 async def clip_coupons(page) -> None:
     await page.goto(COUPON_PAGE_URL)
     await page.wait_for_load_state("networkidle")
-    # Count available coupons before clipping for logging
-    available = await page.locator(".couponTile.available .clipTarget").count()
-    print(f"Found {available} unclipped coupon(s)")
-    if available == 0:
-        print("Nothing to clip.")
-        return
+
+    async def click_show_more():
+        try:
+            await page.locator("#show-more").click(timeout=3000)
+            await asyncio.sleep(5)
+            await click_show_more()
+        except Exception:
+            pass
+
+    await click_show_more()
+
     # Run the bookmarklet; it handles its own async timing via setTimeout
     await page.evaluate(CLIP_ALL_JS)
-    # Wait long enough for all sequential clicks to finish (1.5s * count + buffer)
-    wait_ms = available * 1500 + 3000
-    print(f"Waiting {wait_ms / 1000:.1f}s for all coupons to be clipped...")
-    await asyncio.sleep(wait_ms / 1000)
+    # Poll until no "Clip Coupon" buttons remain rather than guessing a sleep time
+    print("Waiting for all coupons to be clipped...")
+    while True:
+        remaining = await page.eval_on_selector_all(
+            'button[data-opens-modal="false"]',
+            "buttons => buttons.filter(b => b.textContent.trim().includes('Clip Coupon')).length",
+        )
+        if remaining == 0:
+            break
+        print(f"{remaining} coupons remaining...")
+        await asyncio.sleep(2)
     print("Done clipping coupons.")
 
 
@@ -48,23 +82,28 @@ async def main() -> None:
     headless = os.environ.get("HEADLESS", "true").lower() != "false"
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir=USER_DATA_DIR,
+            channel="chrome",
+            headless=headless,
             viewport={"width": 1280, "height": 800},
         )
-        page = await context.new_page()
+        page = context.pages[0] if context.pages else await context.new_page()
         try:
-            print("Logging in to Hannaford...")
-            await login(page, username, password)
-            print("Login successful. Navigating to coupons...")
+            if await is_logged_in(page):
+                print("Reusing saved session.")
+            else:
+                print("No saved session — logging in to Hannaford...")
+                await login(page, username, password)
+                print("Login successful.")
+            print("Navigating to coupons...")
             await clip_coupons(page)
         except Exception:
             await page.screenshot(path="failure.png", full_page=False)
             print("Screenshot saved to failure.png")
             raise
         finally:
-            await browser.close()
+            await context.close()
 
 
 if __name__ == "__main__":
