@@ -16,19 +16,6 @@ javascript:(function() {  var buttons = Array.from(document.querySelectorAll('bu
 """
 
 
-async def is_logged_in(page) -> bool:
-    await page.goto("https://www.hannaford.com/")
-    # Header shows "Sign In" (dropdown trigger) when logged out, replaced by the
-    # user's name when logged in. Role-based match misses the trigger, so use text.
-    try:
-        await page.locator("text=Sign In").first.wait_for(
-            state="visible", timeout=15_000
-        )
-        return False
-    except Exception:
-        return True
-
-
 async def login(page, username: str, password: str) -> None:
     await page.goto("https://www.hannaford.com/")
     # Header has a "Sign In ⌄" dropdown trigger; clicking it reveals an inner
@@ -90,13 +77,16 @@ async def main() -> None:
         )
         page = context.pages[0] if context.pages else await context.new_page()
         try:
-            if await is_logged_in(page):
+            # Use the coupon page itself as the auth probe: if we land there,
+            # session is good; otherwise Hannaford redirects us to a sign-in URL.
+            await page.goto(COUPON_PAGE_URL)
+            await page.wait_for_load_state("networkidle")
+            if "/savings/coupons/browse" in page.url:
                 print("Reusing saved session.")
             else:
                 print("No saved session — logging in to Hannaford...")
                 await login(page, username, password)
                 print("Login successful.")
-            print("Navigating to coupons...")
             await clip_coupons(page)
         except Exception:
             await page.screenshot(path="failure.png", full_page=False)
