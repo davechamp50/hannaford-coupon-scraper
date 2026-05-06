@@ -1,6 +1,7 @@
 import asyncio
 import os
 
+from loguru import logger
 from patchright.async_api import async_playwright
 
 COUPON_PAGE_URL = "https://hannaford.com/savings/coupons/browse"
@@ -17,39 +18,47 @@ javascript:(function() {  var buttons = Array.from(document.querySelectorAll('bu
 
 
 async def login(page, username: str, password: str) -> None:
+    logger.info("Navigating to Hannaford homepage...")
     await page.goto("https://www.hannaford.com/")
     # Header has a "Sign In ⌄" dropdown trigger; clicking it reveals an inner
     # button whose text is exactly "Sign In" — that's the one that opens the form.
+    logger.debug("Waiting for Sign In trigger...")
     sign_in_trigger = page.locator("text=Sign In").first
     await sign_in_trigger.wait_for(state="visible", timeout=60_000)
     await sign_in_trigger.click()
     inner_signin = page.get_by_role("button", name="Sign In", exact=True).last
     await inner_signin.wait_for(state="visible", timeout=10_000)
     await inner_signin.click()
+    logger.debug("Filling credentials...")
     await page.locator('input[name="username"]').fill(username)
     await page.locator('input[name="password"]').fill(password)
+    logger.debug("Submitting login form...")
     await page.get_by_role("button", name="Sign In").click()
     await page.wait_for_load_state("networkidle")
 
 
 async def clip_coupons(page) -> None:
+    logger.info("Navigating to coupon page...")
     await page.goto(COUPON_PAGE_URL)
     await page.wait_for_load_state("networkidle")
 
     async def click_show_more():
         try:
             await page.locator("#show-more").click(timeout=3000)
+            logger.debug("Clicked 'Show More', waiting for coupons to load...")
             await asyncio.sleep(5)
             await click_show_more()
         except Exception:
             pass
 
+    logger.info("Expanding all coupons via 'Show More'...")
     await click_show_more()
+    logger.info("All coupons loaded, injecting clip bookmarklet...")
 
     # Run the bookmarklet; it handles its own async timing via setTimeout
     await page.evaluate(CLIP_ALL_JS)
     # Poll until no "Clip Coupon" buttons remain rather than guessing a sleep time
-    print("Waiting for all coupons to be clipped...")
+    logger.info("Waiting for all coupons to be clipped...")
     while True:
         remaining = await page.eval_on_selector_all(
             'button[data-opens-modal="false"]',
@@ -57,9 +66,9 @@ async def clip_coupons(page) -> None:
         )
         if remaining == 0:
             break
-        print(f"{remaining} coupons remaining...")
-        await asyncio.sleep(2)
-    print("Done clipping coupons.")
+        logger.info(f"{remaining} coupons remaining...")
+        await asyncio.sleep(5)
+    logger.info("Done clipping coupons.")
 
 
 async def main() -> None:
@@ -68,6 +77,7 @@ async def main() -> None:
     # GitHub Actions runs headless; locally you can set HEADLESS=false to watch
     headless = os.environ.get("HEADLESS", "true").lower() != "false"
 
+    logger.info(f"Launching browser (headless={headless})...")
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
@@ -77,22 +87,25 @@ async def main() -> None:
         )
         page = context.pages[0] if context.pages else await context.new_page()
         try:
+            logger.info("Checking session validity...")
             # Use the coupon page itself as the auth probe: if we land there,
             # session is good; otherwise Hannaford redirects us to a sign-in URL.
             await page.goto(COUPON_PAGE_URL)
             await page.wait_for_load_state("networkidle")
             if "/savings/coupons/browse" in page.url:
-                print("Reusing saved session.")
+                logger.info("Reusing saved session.")
             else:
-                print("No saved session — logging in to Hannaford...")
+                logger.info("No saved session — logging in to Hannaford...")
                 await login(page, username, password)
-                print("Login successful.")
+                logger.info("Login successful.")
             await clip_coupons(page)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
             await page.screenshot(path="failure.png", full_page=False)
-            print("Screenshot saved to failure.png")
+            logger.error("Screenshot saved to failure.png")
             raise
         finally:
+            logger.info("Closing browser.")
             await context.close()
 
 
