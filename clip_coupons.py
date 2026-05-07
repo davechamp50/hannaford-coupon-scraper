@@ -53,7 +53,7 @@ async def clip_coupons(page) -> None:
 
     logger.info("Expanding all coupons via 'Show More'...")
     await click_show_more()
-    logger.info("All coupons loaded, injecting clip bookmarklet...")
+    logger.info("All coupons loaded, injecting javascript...")
 
     # Run the bookmarklet; it handles its own async timing via setTimeout
     await page.evaluate(CLIP_ALL_JS)
