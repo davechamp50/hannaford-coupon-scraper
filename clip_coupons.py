@@ -34,13 +34,12 @@ async def login(page, username: str, password: str) -> None:
     await page.locator('input[name="password"]').fill(password)
     logger.debug("Submitting login form...")
     await page.get_by_role("button", name="Sign In").click()
-    await page.wait_for_load_state("networkidle")
+    await page.wait_for_load_state("load")
 
 
 async def clip_coupons(page) -> None:
     logger.info("Navigating to coupon page...")
-    await page.goto(COUPON_PAGE_URL)
-    await page.wait_for_load_state("networkidle")
+    await page.goto(COUPON_PAGE_URL, wait_until="load")
 
     async def click_show_more():
         try:
@@ -90,8 +89,7 @@ async def main() -> None:
             logger.info("Checking session validity...")
             # Use the coupon page itself as the auth probe: if we land there,
             # session is good; otherwise Hannaford redirects us to a sign-in URL.
-            await page.goto(COUPON_PAGE_URL)
-            await page.wait_for_load_state("networkidle")
+            await page.goto(COUPON_PAGE_URL, wait_until="load")
             if "/savings/coupons/browse" in page.url:
                 logger.info("Reusing saved session.")
             else:
